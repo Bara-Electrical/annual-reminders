@@ -91,7 +91,13 @@ if (process.env.RUN_ONCE === "true") {
 } else {
   const app = express();
   app.get("/", (_req, res) => res.json({ status: "ok" }));
-  app.get("/run", async (_req, res) => {
+  app.get("/run", async (req, res) => {
+    // The service is on a public Railway domain (generated for manual testing) but /run
+    // sends real emails to real clients when DRY_RUN=false, so it needs to not be triggerable
+    // by anyone who finds the URL.
+    if (process.env.RUN_TOKEN && req.query.token !== process.env.RUN_TOKEN) {
+      return res.status(401).json({ error: "unauthorized" });
+    }
     try { res.json(await run()); } catch (err) { res.status(500).json({ error: err.message }); }
   });
   const port = process.env.PORT || 3000;
