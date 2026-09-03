@@ -13,6 +13,24 @@ const SENDER_MAILBOX = process.env.GRAPH_SENDER_MAILBOX;
 const DRY_RUN = process.env.DRY_RUN !== "false"; // default to safe/dry unless explicitly disabled
 const DRY_RUN_RECIPIENT = process.env.DRY_RUN_RECIPIENT || "brandon.roberts@baraelectrical.com.au";
 
+// Exchange Online throttles app-only sendMail at roughly 30 messages/minute per mailbox, and
+// a full run is 180+ emails from the one sender. Pace under that ceiling instead of firing
+// them back to back — the 2026-09-02 dry run got all 183 away in 70s, but that's ~2.6/sec and
+// only held because every message went to a single internal recipient.
+function parseSendDelay() {
+  const raw = process.env.SEND_DELAY_MS;
+  if (raw === undefined) return 2500;
+  const ms = Number(raw);
+  if (!Number.isFinite(ms) || ms < 0) {
+    console.warn(`[startup] SEND_DELAY_MS="${raw}" is not a non-negative number — using 2500ms`);
+    return 2500;
+  }
+  return ms;
+}
+const SEND_DELAY_MS = parseSendDelay();
+
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+
 // Override for testing against historical report data (e.g. RUN_DATE=2026-08-05).
 // Computed fresh per run (not at module load) since the server stays up long-term on Railway
 // and the cron trigger needs the actual date at run time, not at process start.
@@ -47,7 +65,7 @@ async function logActivity(action) {
 
 export async function run() {
   const runDate = getRunDate();
-  console.log(`[run] Starting — ${DRY_RUN ? "DRY RUN (all mail redirected to " + DRY_RUN_RECIPIENT + ")" : "LIVE"}, runDate=${runDate.toISOString().slice(0, 10)}`);
+  console.log(`[run] Starting — ${DRY_RUN ? "DRY RUN (all mail redirected to " + DRY_RUN_RECIPIENT + ")" : "LIVE"}, runDate=${runDate.toISOString().slice(0, 10)}, ${SEND_DELAY_MS}ms between sends`);
 
   const { rows, receivedDateTime, sourceUrl } = await fetchLatestReportRows(REPORT_MAILBOX);
   console.log(`[run] Report loaded — ${rows.length} rows, received ${receivedDateTime}, source ${sourceUrl}`);
@@ -55,10 +73,11 @@ export async function run() {
   const groups = computeDueGroups(rows, runDate);
   const { year: targetYear, month: targetMon } = targetMonth(runDate);
   const totalProperties = groups.reduce((n, g) => n + g.items.length, 0);
-  console.log(`[run] ${groups.length} reminder emails to send (${totalProperties} properties total), target month ${targetMon + 1}/${targetYear}`);
+  const pacingSeconds = Math.round(Math.max(groups.length - 1, 0) * SEND_DELAY_MS / 1000);
+  console.log(`[run] ${groups.length} reminder emails to send (${totalProperties} properties total), target month ${targetMon + 1}/${targetYear}, ~${pacingSeconds}s of pacing`);
 
   let sent = 0, failed = 0;
-  for (const group of groups) {
+  for (const [i, group] of groups.entries()) {
     const { subject, html } = buildReminderEmail(group, { targetMonth: targetMon, targetYear });
     const to = DRY_RUN ? DRY_RUN_RECIPIENT : group.emails;
     const finalHtml = DRY_RUN ? `<p><em>[DRY RUN — originally addressed to ${group.emails.join(", ")}]</em></p>${html}` : html;
@@ -74,6 +93,9 @@ export async function run() {
       failed++;
       console.error(`[run] Failed to send to ${group.emails.join(", ")}:`, err.message);
     }
+    // Paced whether live or dry, so a dry run stays a faithful rehearsal of the real thing.
+    // Skipped after the last message — nothing follows it to throttle against.
+    if (i < groups.length - 1) await sleep(SEND_DELAY_MS);
   }
 
   console.log(`[run] Done — sent ${sent}, failed ${failed}`);
