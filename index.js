@@ -1,7 +1,6 @@
 import "dotenv/config";
 import express from "express";
 import cron from "node-cron";
-import Airtable from "airtable";
 import { readFileSync, existsSync } from "fs";
 import { sendMail } from "./graph.js";
 import { fetchLatestReportRows } from "./report.js";
@@ -47,19 +46,26 @@ if (!complianceAttachment) {
 }
 
 // Shared cross-project Activity Log base (same one booking-reminders logs to).
-let airtableBase = null;
-if (process.env.AIRTABLE_API_KEY && process.env.AIRTABLE_BASE_ID) {
-  airtableBase = new Airtable({ apiKey: process.env.AIRTABLE_API_KEY }).base(process.env.AIRTABLE_BASE_ID);
-} else {
-  console.warn("[startup] AIRTABLE_API_KEY or AIRTABLE_BASE_ID not set — activity logging disabled");
+// The activity log lives in the Bara dashboard's database now. It was an Airtable table in
+// the "Bara AI" base until Sep 2026; Airtable is being decommissioned.
+const LOG_API = process.env.DASHBOARD_URL?.replace(/\/$/, "");
+if (!LOG_API || !process.env.LOG_API_SECRET) {
+  console.warn("[startup] DASHBOARD_URL or LOG_API_SECRET not set — activity logging disabled");
 }
 
+// Swallows its own failures, exactly as the Airtable version did: this runs at the end of a
+// reminder send, and a missing log line must never make a completed send look failed.
 async function logActivity(action) {
-  if (!airtableBase) return;
+  if (!LOG_API || !process.env.LOG_API_SECRET) return;
   try {
-    await airtableBase("Activity Log").create([{ fields: { "Action": action, "Department": "Admin" } }]);
+    const res = await fetch(`${LOG_API}/api/log/activity`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${process.env.LOG_API_SECRET}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ action, department: "Admin", source: "annual-reminders" }),
+    });
+    if (!res.ok) throw new Error(`${res.status} ${(await res.text()).slice(0, 200)}`);
   } catch (err) {
-    console.warn("Airtable activity log failed:", err.message);
+    console.warn("Activity log failed:", err.message);
   }
 }
 
