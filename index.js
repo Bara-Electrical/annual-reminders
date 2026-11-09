@@ -114,7 +114,24 @@ export async function run() {
   return { sent, failed, groups: groups.length };
 }
 
+// The month's first Wednesday, judged on the Perth calendar whatever the server's own timezone.
+function isFirstWednesdayInPerth(date = new Date()) {
+  const parts = new Intl.DateTimeFormat("en-AU", { timeZone: "Australia/Perth", weekday: "short", day: "numeric" })
+    .formatToParts(date);
+  const weekday = parts.find(p => p.type === "weekday")?.value;
+  const day = Number(parts.find(p => p.type === "day")?.value);
+  return weekday === "Wed" && day <= 7;
+}
+
 if (process.env.RUN_ONCE === "true") {
+  // Railway cron mode: the service starts, runs, and exits, so it costs nothing between runs.
+  // Railway's schedule fires every Wednesday at 02:00 UTC (10:00 Perth), and cron cannot say
+  // "first Wednesday of the month", so FIRST_WEDNESDAY_ONLY makes every other Wednesday a no-op.
+  // Leave FIRST_WEDNESDAY_ONLY unset for a manual one-off run.
+  if (process.env.FIRST_WEDNESDAY_ONLY === "true" && !isFirstWednesdayInPerth()) {
+    console.log("[cron] not the first Wednesday of the month in Perth, nothing to do");
+    process.exit(0);
+  }
   run().then(() => process.exit(0)).catch(err => { console.error(err); process.exit(1); });
 } else {
   const app = express();
