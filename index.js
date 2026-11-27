@@ -6,6 +6,7 @@ import { sendMail } from "./graph.js";
 import { fetchLatestReportRows } from "./report.js";
 import { computeDueGroups, targetMonth } from "./due.js";
 import { buildReminderEmail } from "./template.js";
+import { dropEnrolled } from "./enrolled.js";
 
 const REPORT_MAILBOX = process.env.REPORT_MAILBOX;
 const SENDER_MAILBOX = process.env.GRAPH_SENDER_MAILBOX;
@@ -76,7 +77,8 @@ export async function run() {
   const { rows, receivedDateTime, sourceUrl } = await fetchLatestReportRows(REPORT_MAILBOX);
   console.log(`[run] Report loaded — ${rows.length} rows, received ${receivedDateTime}, source ${sourceUrl}`);
 
-  const groups = computeDueGroups(rows, runDate);
+  const { groups, dropped } = await dropEnrolled(computeDueGroups(rows, runDate), { dashboardUrl: LOG_API, secret: process.env.LOG_API_SECRET });
+  if (dropped) console.log(`[run] ${dropped} ECC reminder(s) left out: those properties are enrolled for recurring ECCs`);
   const { year: targetYear, month: targetMon } = targetMonth(runDate);
   const totalProperties = groups.reduce((n, g) => n + g.items.length, 0);
   const pacingSeconds = Math.round(Math.max(groups.length - 1, 0) * SEND_DELAY_MS / 1000);
