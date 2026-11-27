@@ -49,7 +49,7 @@ export const CLIENT_RULES = {
   // just get default behaviour, same as any client with no entry here.
 };
 
-function isECC(taskType) {
+export function isECC(taskType) {
   const t = String(taskType ?? "");
   return /electrical compliance/i.test(t) && !/air con/i.test(t);
 }
